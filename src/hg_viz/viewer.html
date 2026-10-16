@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>__HGVIZ_TITLE__ · hg_viz</title>
+<style>
+:root {
+  --bg: #f8fafc; --panel: #ffffff; --ink: #0f172a; --sub: #64748b; --line: #e2e8f0;
+  --accent: #ea580c; --accent-soft: #fed7aa; --canvas: #ffffff; --chip: #f1f5f9;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0b1120; --panel: #111827; --ink: #e2e8f0; --sub: #94a3b8; --line: #1f2937;
+    --chip: #1f2937; --canvas: #f8fafc;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0b1120; --panel: #111827; --ink: #e2e8f0; --sub: #94a3b8; --line: #1f2937;
+  --chip: #1f2937; --canvas: #f8fafc;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  display: grid; grid-template-rows: auto auto 1fr; }
+header { display: flex; align-items: baseline; gap: 16px; padding: 10px 16px 6px; flex-wrap: wrap; }
+header h1 { font-size: 16px; margin: 0; font-weight: 650; }
+header .time { font-family: var(--mono); color: var(--sub); }
+header .status { margin-left: auto; color: var(--sub); font-size: 12px; }
+.legend { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px; color: var(--sub); }
+.legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 3px;
+  margin-right: 4px; vertical-align: -1px; background: var(--c); border: 1px solid var(--b); }
+.bar { display: flex; align-items: center; gap: 8px; padding: 6px 16px 8px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+button, select { font: inherit; color: var(--ink); background: var(--chip); border: 1px solid var(--line);
+  border-radius: 6px; padding: 3px 9px; cursor: pointer; }
+button:hover { border-color: var(--sub); }
+button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.scrub { flex: 1; min-width: 200px; display: grid; gap: 2px; }
+#activity { width: 100%; height: 22px; display: block; cursor: pointer; }
+#slider { width: 100%; margin: 0; accent-color: var(--accent); }
+.counter { font-family: var(--mono); color: var(--sub); min-width: 120px; text-align: right; }
+main { display: grid; grid-template-columns: 1fr 340px; min-height: 0; }
+#graph { position: relative; overflow: hidden; background: var(--canvas); min-height: 0; cursor: grab; }
+#graph.dragging { cursor: grabbing; }
+#graph svg { width: 100%; height: 100%; display: block; user-select: none; }
+#graph .msg { position: absolute; inset: 0; display: grid; place-items: center; color: #64748b; }
+aside { border-left: 1px solid var(--line); background: var(--panel); overflow: auto; padding: 12px 14px; min-height: 0; }
+aside h2 { font-size: 15px; margin: 0 0 2px; }
+aside h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--sub); margin: 14px 0 4px; }
+aside .path { font-family: var(--mono); font-size: 11px; color: var(--sub); word-break: break-all; }
+aside pre { font-family: var(--mono); font-size: 11.5px; background: var(--chip); border-radius: 6px; padding: 6px 8px;
+  margin: 0; white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; }
+aside .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; }
+aside .kv dt { color: var(--sub); } aside .kv dd { margin: 0; font-family: var(--mono); }
+aside .port { border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; margin-bottom: 6px; }
+aside .port .hd { display: flex; gap: 6px; align-items: baseline; margin-bottom: 4px; flex-wrap: wrap; }
+aside .port .nm { font-family: var(--mono); font-weight: 600; }
+aside a { color: var(--accent); cursor: pointer; text-decoration: none; }
+aside a:hover { text-decoration: underline; }
+.badge { display: inline-block; font-size: 10.5px; padding: 0 6px; border-radius: 9px; background: var(--chip); color: var(--sub); }
+.badge.hot { background: var(--accent-soft); color: #9a3412; }
+.hint { color: var(--sub); font-size: 12px; }
+/* --- graph state ------------------------------------------------------- */
+.hgnode path, .hgnode polygon { transition: fill .15s, stroke .15s, opacity .15s; }
+.hgnode.ev path, .hgnode.ev polygon { fill: #fed7aa; stroke: #ea580c; stroke-width: 2.6px; }
+.hgnode.tk:not(.ev) path, .hgnode.tk:not(.ev) polygon { stroke: #ea580c; stroke-width: 2px; }
+.hgnode.absent, .hgedge.absent, .cluster.absent { opacity: .12; }
+.hgnode.dead { opacity: .35; }
+.hgnode.sel path, .hgnode.sel polygon { stroke: #2563eb !important; stroke-width: 3px !important; }
+.hgnode { cursor: pointer; }
+.hgedge.active path { stroke: #ea580c; stroke-width: 2.4px; stroke-dasharray: 7 4; animation: flow .6s linear infinite; }
+.hgedge.active polygon { fill: #ea580c; stroke: #ea580c; }
+.hgedge.active text { fill: #ea580c; }
+.dim { opacity: .15; }
+@keyframes flow { to { stroke-dashoffset: -11; } }
+@media (prefers-reduced-motion: reduce) { .hgedge.active path { animation: none; } }
+@media (max-width: 760px) {
+  main { grid-template-columns: 1fr; grid-template-rows: 1fr 40%; }
+  aside { border-left: 0; border-top: 1px solid var(--line); }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">__HGVIZ_TITLE__</h1>
+  <span class="time" id="time"></span>
+  <div class="legend">
+    <span style="--c:#e0f2fe;--b:#0369a1">source</span>
+    <span style="--c:#ede9fe;--b:#6d28d9">push source</span>
+    <span style="--c:#f8fafc;--b:#475569">compute</span>
+    <span style="--c:#dcfce7;--b:#15803d">sink</span>
+    <span style="--c:#fef3c7;--b:#b45309">nested graph</span>
+    <span style="--c:#fed7aa;--b:#ea580c">evaluated this cycle</span>
+  </div>
+  <span class="status" id="status"></span>
+</header>
+<div class="bar">
+  <button id="first" title="First cycle (Home)">⏮</button>
+  <button id="prev" title="Previous cycle (←)">◀</button>
+  <button id="play" title="Play / pause (space)">▶</button>
+  <button id="next" title="Next cycle (→)">▶|</button>
+  <button id="last" title="Latest cycle (End)">⏭</button>
+  <select id="speed" title="Playback speed">
+    <option value="1500">slow</option><option value="700" selected>normal</option><option value="250">fast</option><option value="60">very fast</option>
+  </select>
+  <div class="scrub">
+    <canvas id="activity" title="Nodes evaluated per cycle — click to jump"></canvas>
+    <input id="slider" type="range" min="0" max="0" value="0">
+  </div>
+  <span class="counter" id="counter"></span>
+  <button id="lineage" title="Dim everything not connected to the selected node">lineage</button>
+  <button id="fit" title="Fit graph to window (f)">fit</button>
+</div>
+<main>
+  <div id="graph"><div class="msg">Loading graph…</div></div>
+  <aside id="panel"><p class="hint">Click a node to inspect its inputs, output and evaluation statistics.
+    Orange nodes evaluated in the current engine cycle; animated edges carried a tick.</p></aside>
+</main>
+<script>
+"use strict";
+const CFG = /*__HGVIZ_CONFIG__*/null;
+const VIZ_URL = "https://cdn.jsdelivr.net/npm/@viz-js/viz@3.11.0/lib/viz-standalone.js";
+const $ = (id) => document.getElementById(id);
+const state = { topo: null, frames: [], cur: -1, playing: false, follow: true, selected: null, lineage: false,
+  nodeEls: new Map(), edgeEls: [], clusterEls: new Map(), vb: null, timer: null };
+
+/* ---------- topology ---------------------------------------------------- */
+let vizPromise = null;
+function loadViz() {
+  if (!vizPromise) vizPromise = new Promise((ok, fail) => {
+    const s = document.createElement("script");
+    s.src = VIZ_URL; s.onload = () => Viz.instance().then(ok, fail);
+    s.onerror = () => fail(new Error("could not load viz.js; install Graphviz locally to embed the SVG"));
+    document.head.appendChild(s);
+  });
+  return vizPromise;
+}
+
+async function setTopology(topo) {
+  state.topo = topo;
+  if (topo.title) { $("title").textContent = topo.title; document.title = topo.title + " · hg_viz"; }
+  let svg;
+  if (topo.svg) {
+    svg = new DOMParser().parseFromString(topo.svg, "image/svg+xml").documentElement;
+  } else {
+    const viz = await loadViz();
+    svg = viz.renderSVGElement(topo.dot);
+  }
+  svg.removeAttribute("width"); svg.removeAttribute("height");
+  const host = $("graph");
+  host.replaceChildren(document.importNode(svg, true));
+  const el = host.querySelector("svg");
+  state.svg = el;
+  const vb = el.viewBox.baseVal;
+  state.home = { x: vb.x, y: vb.y, w: vb.width, h: vb.height };
+  if (!state.vb) state.vb = { ...state.home };
+  applyViewBox();
+  state.nodeEls.clear(); state.clusterEls.clear(); state.edgeEls = [];
+  el.querySelectorAll("g.hgnode").forEach((g) => {
+    const id = g.id.slice(1);
+    const texts = [...g.querySelectorAll("text")];
+    const value = texts.find((t) => (t.getAttribute("font-family") || "").startsWith("Courier"));
+    state.nodeEls.set(id, {
+      g, value, width: value ? Math.max(value.textContent.length, 12) : 0,
+      stats: texts.reverse().find((t) => t.textContent.startsWith("×")),
+    });
+    g.addEventListener("click", (ev) => { ev.stopPropagation(); select(id); });
+  });
+  el.querySelectorAll("g.cluster").forEach((g) => {
+    if (/^c\d+$/.test(g.id)) state.clusterEls.set(g.id.slice(1), g);
+  });
+  el.querySelectorAll("g.hgedge").forEach((g) => {
+    if (g.id.startsWith("x:")) { state.edgeEls.push({ g, keys: [], collect: g.id.slice(2) }); return; }
+    const keys = g.id.slice(2).split("|");
+    state.edgeEls.push({ g, keys });
+  });
+  // the graph's own tooltips duplicate the side panel
+  el.querySelectorAll("title").forEach((t) => t.remove());
+  if (state.cur >= 0) show(state.cur);
+}
+
+/* ---------- pan / zoom --------------------------------------------------- */
+function applyViewBox() {
+  const v = state.vb; if (state.svg) state.svg.setAttribute("viewBox", `${v.x} ${v.y} ${v.w} ${v.h}`);
+}
+function fit() { state.vb = { ...state.home }; applyViewBox(); }
+(function panZoom() {
+  const host = $("graph"); let drag = null;
+  host.addEventListener("wheel", (e) => {
+    if (!state.svg) return; e.preventDefault();
+    const r = state.svg.getBoundingClientRect(), v = state.vb;
+    // account for preserveAspectRatio=xMidYMid meet
+    const s = Math.min(r.width / v.w, r.height / v.h);
+    const ox = (r.width - v.w * s) / 2, oy = (r.height - v.h * s) / 2;
+    const px = v.x + (e.clientX - r.left - ox) / s, py = v.y + (e.clientY - r.top - oy) / s;
+    const k = Math.exp(e.deltaY * 0.0015);
+    state.vb = { x: px - (px - v.x) * k, y: py - (py - v.y) * k, w: v.w * k, h: v.h * k };
+    applyViewBox();
+  }, { passive: false });
+  host.addEventListener("pointerdown", (e) => {
+    if (!state.svg || e.button !== 0) return;
+    drag = { x: e.clientX, y: e.clientY, vb: { ...state.vb }, moved: false };
+    host.setPointerCapture(e.pointerId);
+  });
+  host.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (!drag.moved && Math.hypot(dx, dy) < 4) return;
+    drag.moved = true; host.classList.add("dragging");
+    const r = state.svg.getBoundingClientRect();
+    const s = Math.min(r.width / drag.vb.w, r.height / drag.vb.h);
+    state.vb = { ...drag.vb, x: drag.vb.x - dx / s, y: drag.vb.y - dy / s }; applyViewBox();
+  });
+  host.addEventListener("pointerup", (e) => {
+    const wasDrag = drag && drag.moved; drag = null; host.classList.remove("dragging");
+    if (wasDrag) { // swallow the click that ends a drag
+      const stop = (ev) => { ev.stopPropagation(); }; window.addEventListener("click", stop, { capture: true, once: true });
+      setTimeout(() => window.removeEventListener("click", stop, { capture: true }), 0);
+    }
+  });
+  host.addEventListener("click", () => select(null));
+})();
+
+/* ---------- frames ------------------------------------------------------ */
+function addFrames(list) {
+  if (!list.length) return;
+  state.frames.push(...list);
+  const n = state.frames.length;
+  $("slider").max = String(n - 1);
+  drawActivity();
+  if (state.cur < 0 || (state.follow && !state.playing)) show(n - 1);
+  else updateCounter();
+}
+
+function updateCounter() {
+  const n = state.frames.length;
+  $("counter").textContent = n ? `${state.cur + 1} / ${n}` : "no frames";
+}
+
+function show(i) {
+  const fr = state.frames[i]; if (!fr) return;
+  state.cur = i; $("slider").value = String(i); updateCounter();
+  $("time").textContent = (fr.t ? fr.t : "") + `  · cycle ${fr.cycle}`;
+  const nodes = fr.nodes, active = new Set(fr.edges);
+  const present = (id) => nodes[id] && !nodes[id].dead;
+  for (const [id, el] of state.nodeEls) {
+    const st = nodes[id];
+    const cl = el.g.classList;
+    cl.toggle("absent", !st); cl.toggle("dead", !!(st && st.dead));
+    cl.toggle("ev", !!(st && st.ev)); cl.toggle("tk", !!(st && st.tk));
+    if (st && el.value && st.v !== undefined) el.value.textContent = clip("= " + st.v, el.width);
+    if (st && el.stats) el.stats.textContent = `×${st.c}` + (st.us ? ` · ${fmtUs(st.us)}` : "");
+  }
+  // nested graph instances: present while any of their nodes is alive
+  const alive = new Set();
+  for (const id in nodes) if (!nodes[id].dead) { let p = state.topo.nodes[id]; while (p) { alive.add(String(p.parent)); p = state.topo.nodes[p.parent]; } }
+  for (const [id, g] of state.clusterEls) g.classList.toggle("absent", !alive.has(id) && !present(id));
+  for (const { g, keys, collect } of state.edgeEls) {
+    if (collect) {
+      const st = nodes[collect];
+      g.classList.toggle("active", !!(st && st.tk)); g.classList.toggle("absent", !present(collect));
+      continue;
+    }
+    g.classList.toggle("active", keys.some((k) => active.has(k)));
+    const gone = keys.every((k) => { const e = state.topo.edges[k]; return !e || !present(e.src) || !present(e.dst); });
+    g.classList.toggle("absent", gone);
+  }
+  drawActivity();
+  if (state.selected) renderPanel(state.selected);
+}
+
+function clip(s, n) { return s.length <= n ? s : s.slice(0, n - 1) + "…"; }
+function fmtUs(us) { return us < 1000 ? `${us.toFixed(0)}µs` : us < 1e6 ? `${(us / 1000).toFixed(1)}ms` : `${(us / 1e6).toFixed(2)}s`; }
+
+function drawActivity() {
+  const c = $("activity"), ctx = c.getContext("2d");
+  const w = c.clientWidth, h = c.clientHeight, dpr = window.devicePixelRatio || 1;
+  c.width = w * dpr; c.height = h * dpr; ctx.scale(dpr, dpr); ctx.clearRect(0, 0, w, h);
+  const fr = state.frames; if (!fr.length) return;
+  const counts = fr.map((f) => Object.values(f.nodes).filter((n) => n.ev).length);
+  const max = Math.max(1, ...counts), bw = w / fr.length;
+  for (let i = 0; i < fr.length; i++) {
+    const bh = Math.max(1, (counts[i] / max) * (h - 2));
+    ctx.fillStyle = i === state.cur ? "#ea580c" : "#94a3b8";
+    ctx.fillRect(i * bw + (bw > 3 ? 0.5 : 0), h - bh, Math.max(bw - (bw > 3 ? 1 : 0), 0.6), bh);
+  }
+}
+
+/* ---------- selection & side panel ---------------------------------------- */
+function select(id) {
+  if (state.selected) state.nodeEls.get(state.selected)?.g.classList.remove("sel");
+  state.selected = id;
+  if (id) state.nodeEls.get(id)?.g.classList.add("sel");
+  applyLineage();
+  if (id) renderPanel(id);
+  else $("panel").innerHTML = '<p class="hint">Click a node to inspect its inputs, output and evaluation statistics.</p>';
+}
+
+function connected(id) {
+  const up = new Map(), down = new Map();
+  for (const k in state.topo.edges) {
+    const e = state.topo.edges[k], s = String(e.src), d = String(e.dst);
+    (down.get(s) || down.set(s, []).get(s)).push(d);
+    (up.get(d) || up.set(d, []).get(d)).push(s);
+  }
+  // an instance's result node feeds the nested node that owns the instance
+  for (const { collect } of state.edgeEls) {
+    if (!collect) continue;
+    const inst = state.topo.nodes[collect], owner = inst && state.topo.nodes[inst.parent] ? String(state.topo.nodes[inst.parent].parent) : null;
+    if (!owner) continue;
+    (down.get(collect) || down.set(collect, []).get(collect)).push(owner);
+    (up.get(owner) || up.set(owner, []).get(owner)).push(collect);
+  }
+  const seen = new Set([id]);
+  for (const graph of [up, down]) {
+    const stack = [id];
+    while (stack.length) for (const n of graph.get(stack.pop()) || []) if (!seen.has(n)) { seen.add(n); stack.push(n); }
+  }
+  // nested owners of connected nodes stay visible too
+  for (const n of [...seen]) { let p = state.topo.nodes[n]; while (p && p.parent) { seen.add(String(p.parent)); p = state.topo.nodes[p.parent]; } }
+  return seen;
+}
+
+function applyLineage() {
+  const on = state.lineage && state.selected;
+  const keep = on ? connected(state.selected) : null;
+  for (const [id, el] of state.nodeEls) el.g.classList.toggle("dim", !!on && !keep.has(id));
+  for (const { g, keys, collect } of state.edgeEls) g.classList.toggle("dim", !!on && (collect ? !keep.has(collect) : !keys.some((k) => {
+    const e = state.topo.edges[k]; return e && keep.has(String(e.src)) && keep.has(String(e.dst)); })));
+  $("lineage").classList.toggle("on", state.lineage);
+}
+
+function esc(s) { return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+function pretty(json) {
+  if (json == null) return "∅";
+  try { return JSON.stringify(JSON.parse(json), null, 1); } catch { return json; }
+}
+function nodeLink(id) {
+  const n = state.topo.nodes[id];
+  return `<a data-node="${esc(id)}">${esc(n ? n.label : "#" + id)}</a>`;
+}
+
+function renderPanel(id) {
+  const meta = state.topo.nodes[id] || {}, fr = state.frames[state.cur], st = fr ? fr.nodes[id] : null;
+  const ins = [], outs = [];
+  for (const k in state.topo.edges) {
+    const e = state.topo.edges[k];
+    if (String(e.dst) === id) ins.push([k, e]);
+    if (String(e.src) === id) outs.push([k, e]);
+  }
+  const active = new Set(fr ? fr.edges : []);
+  let h = `<h2>${esc(meta.label || id)}</h2><div class="path">${esc(meta.path || "")}</div>`;
+  h += `<div style="margin-top:6px"><span class="badge">${esc(meta.kind || "")}</span> `;
+  if (meta.impl) h += `<span class="badge">${esc(meta.impl)}</span> `;
+  if (!st) h += `<span class="badge">not present in this cycle</span>`;
+  else {
+    if (st.dead) h += `<span class="badge">stopped</span> `;
+    if (st.ev) h += `<span class="badge hot">evaluated this cycle</span> `;
+    if (st.tk) h += `<span class="badge hot">output ticked</span>`;
+  }
+  h += `</div>`;
+  if (st) h += `<h3>Statistics</h3><dl class="kv"><dt>evaluations</dt><dd>${st.c}</dd><dt>total time</dt><dd>${fmtUs(st.us || 0)}</dd>` +
+    (st.c ? `<dt>mean</dt><dd>${fmtUs((st.us || 0) / st.c)}</dd>` : "") + `</dl>`;
+  if (meta.schema && meta.schema.out) {
+    h += `<h3>Output · ${esc(st && st.ot ? st.ot : meta.schema.out)}</h3><pre>${esc(st ? pretty(st.o) : "–")}</pre>`;
+  }
+  if (ins.length) {
+    h += `<h3>Inputs</h3>`;
+    const seen = new Set();
+    for (const [k, e] of ins) {
+      const v = st && st.in ? st.in[e.input] : undefined;
+      h += `<div class="port"><div class="hd"><span class="nm">${esc(e.input)}</span><span>← ${nodeLink(String(e.src))}` +
+        (e.out.length ? ` <span class="badge">${esc(e.out.join("."))}</span>` : "") +
+        (active.has(k) ? ` <span class="badge hot">ticked</span>` : "") + `</span></div>`;
+      if (v !== undefined && !seen.has(e.input)) h += `<pre>${esc(pretty(v))}</pre>`;
+      seen.add(e.input);
+      h += `</div>`;
+    }
+  }
+  if (outs.length) {
+    h += `<h3>Consumers</h3><div>` + [...new Set(outs.map(([, e]) => String(e.dst)))].map((d) => {
+      const e = outs.find(([, x]) => String(x.dst) === d)[1];
+      return `${nodeLink(d)} <span class="hint">.${esc(e.input)}</span>`;
+    }).join("<br>") + `</div>`;
+  }
+  const panel = $("panel");
+  panel.innerHTML = h;
+  panel.querySelectorAll("a[data-node]").forEach((a) => a.addEventListener("click", () => select(a.dataset.node)));
+}
+
+/* ---------- playback ------------------------------------------------------ */
+function play(on) {
+  state.playing = on; $("play").textContent = on ? "⏸" : "▶"; $("play").classList.toggle("on", on);
+  clearTimeout(state.timer);
+  if (on) tick();
+}
+function tick() {
+  if (!state.playing) return;
+  if (state.cur < state.frames.length - 1) show(state.cur + 1);
+  else if (CFG.mode !== "live") { play(false); return; }
+  state.timer = setTimeout(tick, Number($("speed").value));
+}
+function go(i) { state.follow = i >= state.frames.length - 1; show(Math.max(0, Math.min(i, state.frames.length - 1))); }
+$("play").onclick = () => { if (!state.playing && state.cur >= state.frames.length - 1 && CFG.mode !== "live") show(0); play(!state.playing); };
+$("prev").onclick = () => { play(false); go(state.cur - 1); };
+$("next").onclick = () => { play(false); go(state.cur + 1); };
+$("first").onclick = () => { play(false); go(0); };
+$("last").onclick = () => { play(false); go(state.frames.length - 1); };
+$("slider").oninput = (e) => { play(false); go(Number(e.target.value)); };
+$("activity").onclick = (e) => {
+  const r = e.target.getBoundingClientRect();
+  play(false); go(Math.floor(((e.clientX - r.left) / r.width) * state.frames.length));
+};
+$("fit").onclick = fit;
+$("lineage").onclick = () => { state.lineage = !state.lineage; applyLineage(); };
+window.addEventListener("resize", drawActivity);
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  if (e.key === " ") { e.preventDefault(); $("play").click(); }
+  else if (e.key === "ArrowLeft") $("prev").click();
+  else if (e.key === "ArrowRight") $("next").click();
+  else if (e.key === "Home") $("first").click();
+  else if (e.key === "End") $("last").click();
+  else if (e.key === "f") fit();
+  else if (e.key === "Escape") select(null);
+});
+
+/* ---------- boot ---------------------------------------------------------- */
+async function boot() {
+  try {
+    if (CFG.mode === "live") {
+      $("status").textContent = "live";
+      let version = -1, after = -1, failures = 0;
+      const poll = async () => {
+        try {
+          const t = await (await fetch(`api/topology?since=${version}`)).json();
+          if (t && t.version !== undefined && t.version !== version) { version = t.version; await setTopology(t); }
+          const f = await (await fetch(`api/frames?after=${after}`)).json();
+          if (f.frames.length) { after = f.frames[f.frames.length - 1].i; addFrames(f.frames); }
+          $("status").textContent = `live · ${f.running ? "running" : "finished"}`;
+          failures = 0;
+        } catch (err) { failures++; $("status").textContent = "disconnected"; }
+        setTimeout(poll, failures ? Math.min(10000, CFG.pollMs * 2 ** failures) : CFG.pollMs);
+      };
+      poll();
+    } else {
+      await setTopology(CFG.topology);
+      addFrames(CFG.frames);
+      $("status").textContent = `${CFG.frames.length} recorded cycles`;
+    }
+  } catch (err) {
+    $("graph").innerHTML = `<div class="msg">${esc(err.message || err)}</div>`;
+  }
+}
+boot();
+</script>
+</body>
+</html>
